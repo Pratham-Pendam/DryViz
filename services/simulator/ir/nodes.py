@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Union
+from typing import List
+
 
 
 # -----------------------------
@@ -86,3 +88,24 @@ class BinaryOperation(Expression):
     left: Expression
     operator: str
     right: Expression
+
+
+
+@dataclass
+class FunctionDef(Statement):
+    name: str
+    params: List[str]
+    body: List[Statement]
+    line: int
+
+
+@dataclass
+class FunctionCall(Expression):
+    name: str
+    args: List[Expression]
+
+
+@dataclass
+class ReturnStatement(Statement):
+    value: Optional[Expression]
+    line: int
