@@ -1,18 +1,35 @@
 "use client";
 
 import { useState } from "react";
+import { checkBackend } from "../lib/api";
 
 export default function Home() {
-  const [code, setCode] = useState(
-    `x = 5
-y = x + 3`
-  );
+  const [backendStatus, setBackendStatus] = useState<string>("Not tested");
+  const [loading, setLoading] = useState(false);
+
+  const handleBackendTest = async () => {
+    try {
+      setLoading(true);
+      setBackendStatus("Connecting...");
+
+      const result = await checkBackend();
+
+      setBackendStatus(
+        `${result.status} — ${result.service}`
+      );
+    } catch (error) {
+      console.error(error);
+      setBackendStatus("Backend connection failed");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <main
       style={{
         minHeight: "100vh",
-        padding: "40px"
+        padding: "40px",
       }}
     >
       <h1>DryRun AI</h1>
@@ -21,36 +38,24 @@ y = x + 3`
         Understand what your code is doing, step by step.
       </p>
 
-      <textarea
-        value={code}
-        onChange={(event) => setCode(event.target.value)}
-        style={{
-          width: "100%",
-          height: "300px",
-          marginTop: "30px",
-          padding: "20px",
-          background: "#1a1d24",
-          color: "#ffffff",
-          border: "1px solid #333",
-          borderRadius: "8px",
-          fontFamily: "monospace",
-          fontSize: "16px",
-          resize: "vertical"
-        }}
-      />
-
       <button
+        onClick={handleBackendTest}
+        disabled={loading}
         style={{
-          marginTop: "20px",
+          marginTop: "30px",
           padding: "12px 24px",
           borderRadius: "6px",
           border: "none",
-          cursor: "pointer",
-          fontSize: "16px"
+          cursor: loading ? "not-allowed" : "pointer",
+          fontSize: "16px",
         }}
       >
-        Understand Code
+        {loading ? "Connecting..." : "Test Backend"}
       </button>
+
+      <p style={{ marginTop: "20px" }}>
+        Backend status: {backendStatus}
+      </p>
     </main>
   );
 }
