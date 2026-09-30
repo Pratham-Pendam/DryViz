@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.health import router as health_router
-
+from app.routes.trace import router as trace_router
 
 app = FastAPI(
     title="DryRun AI API",
@@ -23,3 +23,4 @@ app.add_middleware(
 
 
 app.include_router(health_router)
+app.include_router(trace_router)
