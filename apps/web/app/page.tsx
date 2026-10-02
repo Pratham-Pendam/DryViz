@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { TraceEvent, traceCode } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import Editor from "@monaco-editor/react";
+import * as Monaco from "monaco-editor";
+import { traceCode, type TraceEvent } from "../lib/api";
 
 const DEFAULT_CODE = `x = 5
 y = x + 3
@@ -11,43 +13,53 @@ export default function Home() {
   const [code, setCode] = useState(DEFAULT_CODE);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [currentStep, setCurrentStep] = useState(0);
-
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof Monaco | null>(null);
+  const decorationIdsRef = useRef<string[]>([]);
 
   const currentEvent = events[currentStep];
 
-  const handleRun = async () => {
-    setIsLoading(true);
-    setIsPlaying(false);
-    setError(null);
+  // Highlight the source line corresponding to the selected trace event.
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
 
-    try {
-      const result = await traceCode(code);
-
-      setEvents(result.events);
-      setCurrentStep(0);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Something went wrong."
-      );
-      setEvents([]);
-    } finally {
-      setIsLoading(false);
+    if (!editor || !monaco) {
+      return;
     }
-  };
 
-  const handlePrevious = () => {
-    setIsPlaying(false);
-    setCurrentStep((step) => Math.max(0, step - 1));
-  };
+    if (!currentEvent) {
+      decorationIdsRef.current = editor.deltaDecorations(
+        decorationIdsRef.current,
+        []
+      );
+      return;
+    }
 
-  const handleNext = () => {
-    setIsPlaying(false);
-    setCurrentStep((step) => Math.min(events.length - 1, step + 1));
-  };
+    const line = currentEvent.line;
 
+    decorationIdsRef.current = editor.deltaDecorations(
+      decorationIdsRef.current,
+      [
+        {
+          range: new monaco.Range(line, 1, line, 1),
+          options: {
+            isWholeLine: true,
+            className: "dryrun-current-line",
+            glyphMarginClassName: "dryrun-current-line-glyph",
+          },
+        },
+      ]
+    );
+
+    editor.revealLineInCenter(line);
+  }, [currentEvent]);
+
+  // Automatically advance through trace events while playing.
   useEffect(() => {
     if (!isPlaying || events.length === 0) {
       return;
@@ -67,194 +79,176 @@ export default function Home() {
     return () => window.clearInterval(intervalId);
   }, [isPlaying, events.length]);
 
+  async function handleRun() {
+    setIsPlaying(false);
+    setIsLoading(true);
+    setError("");
+    setEvents([]);
+    setCurrentStep(0);
+
+    try {
+      const response = await traceCode(code);
+      setEvents(response.events);
+      setCurrentStep(0);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Something went wrong while tracing."
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function handlePrevious() {
+    setIsPlaying(false);
+    setCurrentStep((step) => Math.max(0, step - 1));
+  }
+
+  function handleNext() {
+    setIsPlaying(false);
+    setCurrentStep((step) => Math.min(events.length - 1, step + 1));
+  }
+
+  function handlePlayPause() {
+    if (events.length === 0) {
+      return;
+    }
+
+    if (currentStep >= events.length - 1 && !isPlaying) {
+      setCurrentStep(0);
+    }
+
+    setIsPlaying((playing) => !playing);
+  }
+
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        padding: "32px",
-        maxWidth: "1200px",
-        margin: "0 auto",
-      }}
-    >
-      <h1>DryRun AI</h1>
-
-      <p>
-        Understand what your code is doing, step by step.
-      </p>
-
-      <section style={{ marginTop: "32px" }}>
-        <h2>Python Code</h2>
-
-        <textarea
-          value={code}
-          onChange={(event) => setCode(event.target.value)}
-          spellCheck={false}
-          style={{
-            width: "100%",
-            height: "220px",
-            padding: "16px",
-            background: "#1a1d24",
-            color: "#ffffff",
-            border: "1px solid #333",
-            borderRadius: "8px",
-            fontFamily: "monospace",
-            fontSize: "16px",
-            lineHeight: 1.6,
-            resize: "vertical",
-          }}
-        />
+    <main className="app">
+      <header className="topbar">
+        <div>
+          <h1>DryRun AI</h1>
+          <p>Understand code, one step at a time.</p>
+        </div>
 
         <button
+          className="run-button"
           onClick={handleRun}
           disabled={isLoading}
-          style={{
-            marginTop: "16px",
-            padding: "12px 24px",
-            border: "none",
-            borderRadius: "6px",
-            cursor: isLoading ? "not-allowed" : "pointer",
-            fontSize: "16px",
-          }}
         >
-          {isLoading ? "Running..." : "Run Code"}
+          {isLoading ? "Tracing..." : "Run"}
         </button>
-      </section>
+      </header>
 
-      {error && (
-        <div
-          style={{
-            marginTop: "20px",
-            padding: "12px",
-            background: "#451d1d",
-            color: "#ffb4b4",
-            borderRadius: "6px",
-          }}
-        >
-          {error}
+      <section className="workspace">
+        <div className="panel code-panel">
+          <div className="panel-heading">
+            <h2>Python Code</h2>
+            <span>Editor</span>
+          </div>
+
+          <Editor
+            height="420px"
+            language="python"
+            theme="vs-dark"
+            value={code}
+            onChange={(value) => setCode(value ?? "")}
+            onMount={(editor, monaco) => {
+              editorRef.current = editor;
+              monacoRef.current = monaco;
+            }}
+            options={{
+              fontSize: 15,
+              minimap: { enabled: false },
+              lineNumbers: "on",
+              glyphMargin: true,
+              scrollBeyondLastLine: false,
+              automaticLayout: true,
+              padding: { top: 16 },
+            }}
+          />
         </div>
-      )}
 
-      {events.length > 0 && currentEvent && (
-        <section style={{ marginTop: "32px" }}>
-          <h2>Execution Visualizer</h2>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: "20px",
-            }}
-          >
-            <div
-              style={{
-                padding: "20px",
-                background: "#1a1d24",
-                borderRadius: "8px",
-              }}
-            >
-              <h3>Current Execution</h3>
-
-              <p>
-                Step: {currentEvent.step + 1} / {events.length}
-              </p>
-
-              <p>
-                Executing line: {currentEvent.line}
-              </p>
-
-              <p>
-                Event: {currentEvent.event}
-              </p>
-            </div>
-
-            <div
-              style={{
-                padding: "20px",
-                background: "#1a1d24",
-                borderRadius: "8px",
-              }}
-            >
-              <h3>Variables</h3>
-
-              {Object.entries(currentEvent.variables).length === 0 ? (
-                <p>No variables recorded yet.</p>
-              ) : (
-                Object.entries(currentEvent.variables).map(
-                  ([name, value]) => (
-                    <div
-                      key={name}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        padding: "8px 0",
-                        borderBottom: "1px solid #333",
-                        fontFamily: "monospace",
-                      }}
-                    >
-                      <strong>{name}</strong>
-                      <span>{JSON.stringify(value)}</span>
-                    </div>
-                  )
-                )
-              )}
-            </div>
+        <div className="panel trace-panel">
+          <div className="panel-heading">
+            <h2>Execution Trace</h2>
+            <span>
+              {events.length > 0
+                ? `Step ${currentStep + 1} of ${events.length}`
+                : "Not started"}
+            </span>
           </div>
 
-          <div style={{ marginTop: "24px" }}>
-            <input
-              type="range"
-              min={0}
-              max={events.length - 1}
-              value={currentStep}
-              onChange={(event) => {
-                setIsPlaying(false);
-                setCurrentStep(Number(event.target.value));
-              }}
-              style={{
-                width: "100%",
-                cursor: "pointer",
-              }}
-            />
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                marginTop: "8px",
-              }}
-            >
-              <span>Step {currentStep + 1}</span>
-              <span>{events.length} total steps</span>
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              gap: "12px",
-              marginTop: "20px",
-            }}
-          >
-            <button onClick={handlePrevious} disabled={currentStep === 0}>
+          <div className="controls">
+            <button onClick={handlePrevious} disabled={events.length === 0}>
               Previous
             </button>
 
             <button
-              onClick={() => setIsPlaying((playing) => !playing)}
-              disabled={events.length <= 1}
+              className="play-button"
+              onClick={handlePlayPause}
+              disabled={events.length === 0}
             >
               {isPlaying ? "Pause" : "Play"}
             </button>
 
             <button
               onClick={handleNext}
-              disabled={currentStep >= events.length - 1}
+              disabled={events.length === 0 || currentStep >= events.length - 1}
             >
               Next
             </button>
           </div>
-        </section>
-      )}
+
+          <input
+            className="step-slider"
+            type="range"
+            min={0}
+            max={Math.max(events.length - 1, 0)}
+            value={currentStep}
+            disabled={events.length === 0}
+            onChange={(event) => {
+              setIsPlaying(false);
+              setCurrentStep(Number(event.target.value));
+            }}
+          />
+
+          {error && <p className="error-message">{error}</p>}
+
+          {!error && events.length === 0 && (
+            <div className="empty-state">
+              Press <strong>Run</strong> to generate a trace.
+            </div>
+          )}
+
+          {currentEvent && (
+            <div className="trace-details">
+              <div className="detail-card">
+                <span className="detail-label">Current line</span>
+                <strong>{currentEvent.line}</strong>
+              </div>
+
+              <div className="detail-card">
+                <span className="detail-label">Event</span>
+                <strong>{currentEvent.event}</strong>
+              </div>
+
+              <h3>Variables</h3>
+
+              {Object.keys(currentEvent.variables).length === 0 ? (
+                <p className="muted">No variables recorded at this step.</p>
+              ) : (
+                <div className="variables">
+                  {Object.entries(currentEvent.variables).map(([name, value]) => (
+                    <div className="variable-row" key={name}>
+                      <code>{name}</code>
+                      <code>{JSON.stringify(value)}</code>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
     </main>
   );
 }
