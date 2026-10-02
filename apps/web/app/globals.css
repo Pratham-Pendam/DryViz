@@ -32,6 +32,173 @@
   margin-top: 5px;
 }
 
+.dryrun-current-line {
+  background: rgba(255, 215, 0, 0.18);
+}
+
+.dryrun-current-line-glyph {
+  background: #facc15;
+  width: 5px !important;
+  margin-left: 3px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #101114;
+  color: #f5f5f5;
+  font-family: Arial, sans-serif;
+}
+
+button {
+  padding: 9px 14px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #25262b;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.app {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.topbar,
+.panel-heading,
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.topbar {
+  margin-bottom: 24px;
+}
+
+.topbar h1,
+.panel-heading h2 {
+  margin: 0;
+}
+
+.topbar p,
+.panel-heading span,
+.muted {
+  color: #a1a1aa;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.panel {
+  overflow: hidden;
+  border: 1px solid #303138;
+  border-radius: 10px;
+  background: #191a1f;
+}
+
+.panel-heading {
+  min-height: 56px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #303138;
+}
+
+.panel-heading h2 {
+  font-size: 16px;
+}
+
+.run-button,
+.play-button {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.controls {
+  justify-content: flex-start;
+  padding: 16px;
+}
+
+.step-slider {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 0 16px 18px;
+}
+
+.trace-details {
+  padding: 0 16px 18px;
+}
+
+.trace-details h3 {
+  margin-top: 24px;
+}
+
+.detail-card {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 110px;
+  margin: 0 10px 12px 0;
+  padding: 12px;
+  border: 1px solid #303138;
+  border-radius: 8px;
+}
+
+.detail-label {
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.variables {
+  overflow: hidden;
+  border: 1px solid #303138;
+  border-radius: 8px;
+}
+
+.variable-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border-bottom: 1px solid #303138;
+}
+
+.variable-row:last-child {
+  border-bottom: 0;
+}
+
+.variable-row code {
+  overflow-wrap: anywhere;
+}
+
+.empty-state,
+.error-message {
+  padding: 18px 16px;
+}
+
+.error-message {
+  color: #fca5a5;
+}
+
+@media (max-width: 850px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
