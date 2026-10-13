@@ -23,6 +23,53 @@ export default function Home() {
 
   const currentEvent = events[currentStep];
 
+  const previousEvent = currentStep > 0 ? events[currentStep - 1] : undefined;
+
+function getVariableChanges() {
+  if (!currentEvent) {
+    return [];
+  }
+
+  const previousVariables = previousEvent?.variables ?? {};
+  const currentVariables = currentEvent.variables;
+
+  const variableNames = new Set([
+    ...Object.keys(previousVariables),
+    ...Object.keys(currentVariables),
+  ]);
+
+  return Array.from(variableNames).map((name) => {
+    const existedBefore = Object.prototype.hasOwnProperty.call(
+      previousVariables,
+      name
+    );
+
+    const existsNow = Object.prototype.hasOwnProperty.call(
+      currentVariables,
+      name
+    );
+
+    const previousValue = previousVariables[name];
+    const currentValue = currentVariables[name];
+
+    const changed =
+      !existedBefore ||
+      !existsNow ||
+      JSON.stringify(previousValue) !== JSON.stringify(currentValue);
+
+    return {
+      name,
+      previousValue,
+      currentValue,
+      existedBefore,
+      existsNow,
+      changed,
+    };
+  });
+}
+
+const variableChanges = getVariableChanges();
+
   // Highlight the source line corresponding to the selected trace event.
   useEffect(() => {
     const editor = editorRef.current;
@@ -232,6 +279,59 @@ export default function Home() {
               </div>
 
               <h3>Variables</h3>
+              <div className="variables-heading">
+  <h3>Memory Changes</h3>
+  <span>
+    {variableChanges.filter((variable) => variable.changed).length} changed
+  </span>
+</div>
+
+{/* {variableChanges.length === 0 ? (
+  <p className="muted">No variables recorded at this step.</p>
+) : (
+  <div className="variables">
+    {variableChanges.map((variable) => (
+      <div
+        className={`variable-row ${
+          variable.changed ? "variable-changed" : ""
+        }`}
+        key={variable.name}
+      >
+        <div className="variable-info">
+          <code className="variable-name">{variable.name}</code>
+
+          {variable.changed && (
+            <span className="change-badge">
+              {!variable.existedBefore
+                ? "NEW"
+                : !variable.existsNow
+                  ? "REMOVED"
+                  : "CHANGED"}
+            </span>
+          )}
+        </div>
+
+        <div className="variable-values">
+          {variable.changed && (
+            <code className="previous-value">
+              {variable.existedBefore
+                ? JSON.stringify(variable.previousValue)
+                : "—"}
+            </code>
+          )}
+
+          {variable.changed && <span className="value-arrow">→</span>}
+
+          <code className="current-value">
+            {variable.existsNow
+              ? JSON.stringify(variable.currentValue)
+              : "—"}
+          </code>
+        </div>
+      </div>
+    ))}
+  </div>
+)} */}
 
               {Object.keys(currentEvent.variables).length === 0 ? (
                 <p className="muted">No variables recorded at this step.</p>
