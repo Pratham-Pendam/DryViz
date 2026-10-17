@@ -268,6 +268,49 @@ const variableChanges = getVariableChanges();
 
           {currentEvent && (
             <div className="trace-details">
+              
+<div className="memory-panel">
+  <div className="memory-panel-heading">
+    <h3>Memory View</h3>
+    <span>Current state</span>
+  </div>
+
+  {Object.keys(currentEvent.variables).length === 0 ? (
+    <p className="muted">Memory is empty at this step.</p>
+  ) : (
+    <div className="memory-grid">
+      {Object.entries(currentEvent.variables).map(([name, value]) => {
+        const change = variableChanges.find(
+          (variable) => variable.name === name
+        );
+
+        return (
+          <div
+            className={`memory-cell ${
+              change?.changed ? "memory-cell-changed" : ""
+            }`}
+            key={name}
+          >
+            <div className="memory-cell-top">
+              <span>VARIABLE</span>
+              {change?.changed && <span className="memory-status">UPDATED</span>}
+            </div>
+
+            <div className="memory-cell-name">{name}</div>
+
+            <div className="memory-cell-divider" />
+
+            <div className="memory-cell-value">
+              {JSON.stringify(value)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  )}
+</div>
+{/* </div> */}
+
               <div className="detail-card">
                 <span className="detail-label">Current line</span>
                 <strong>{currentEvent.line}</strong>
