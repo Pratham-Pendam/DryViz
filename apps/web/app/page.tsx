@@ -24,6 +24,31 @@ export default function Home() {
   const decorationsRef = useRef<string[]>([]);
 
   const currentEvent = events[currentStep];
+  const callStack = events
+  .slice(0, currentStep + 1)
+  .reduce<string[]>((stack, event) => {
+    const functionName = event.function || "<module>";
+
+    if (event.event === "return") {
+      if (functionName === "<module>") {
+        return [];
+      }
+
+      const index = stack.lastIndexOf(functionName);
+
+      if (index !== -1) {
+        return stack.slice(0, index);
+      }
+
+      return stack;
+    }
+
+    if (stack[stack.length - 1] !== functionName) {
+      return [...stack, functionName];
+    }
+
+    return stack;
+  }, []);
   const previousEvent = currentStep > 0 ? events[currentStep - 1] : undefined;
 
   const variableChanges = Object.entries(currentEvent?.variables ?? {}).map(
@@ -266,6 +291,66 @@ export default function Home() {
                 )}
               </div>
             </div>
+
+            
+<div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e]">
+  <div className="border-b border-white/[0.07] px-5 py-4">
+    <div className="flex items-center justify-between">
+      <h3 className="text-sm font-semibold">Call Stack</h3>
+      <span className="rounded-full bg-white/[0.05] px-2.5 py-1 text-xs text-slate-400">
+        {callStack.length} frame{callStack.length === 1 ? "" : "s"}
+      </span>
+    </div>
+    <p className="mt-1 text-xs text-slate-500">
+      Function calls active at this step
+    </p>
+  </div>
+
+  <div className="space-y-2 p-5">
+    {callStack.length === 0 ? (
+      <p className="py-4 text-center text-sm text-slate-500">
+        No active stack frames.
+      </p>
+    ) : (
+      [...callStack].reverse().map((frame, index) => (
+        <div
+          key={`${frame}-${index}`}
+          className={`flex items-center gap-3 rounded-xl border p-3 ${
+            index === 0
+              ? "border-indigo-400/40 bg-indigo-400/[0.08]"
+              : "border-white/[0.07] bg-white/[0.02]"
+          }`}
+        >
+          <div
+            className={`flex h-8 w-8 items-center justify-center rounded-lg font-mono text-sm ${
+              index === 0
+                ? "bg-indigo-400/15 text-indigo-300"
+                : "bg-white/[0.05] text-slate-400"
+            }`}
+          >
+            {index === 0 ? "▶" : "ƒ"}
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-mono text-sm text-slate-200">
+              {frame}()
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              {index === 0 ? "Current frame" : "Caller"}
+            </p>
+          </div>
+
+          {index === 0 && (
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-300">
+              Active
+            </span>
+          )}
+        </div>
+      ))
+    )}
+  </div>
+</div>
+
 
             <div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e]">
               <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
