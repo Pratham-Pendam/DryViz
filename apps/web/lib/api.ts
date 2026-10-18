@@ -9,6 +9,7 @@ export type TraceEvent = {
   step: number;
   line: number;
   event: string;
+  function:string;
   variables: Record<string, unknown>;
 };
 
