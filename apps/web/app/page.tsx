@@ -1,14 +1,28 @@
 
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import Editor from "@monaco-editor/react";
-import * as Monaco from "monaco-editor";
-import { traceCode, type TraceEvent } from "../lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Editor, { type OnMount } from "@monaco-editor/react";
+import type { editor as MonacoEditor } from "monaco-editor";
+import { traceCode, type TraceEvent } from "@/lib/api";
 
-const DEFAULT_CODE = `x = 10
-x = x + 5
-y = x * 2`;
+const DEFAULT_CODE = `def factorial(n):
+    if n <= 1:
+        return 1
+
+    result = n * factorial(n - 1)
+    return result
+
+answer = factorial(3)
+`;
+
+type Frame = TraceEvent;
+
+function getValueLabel(value: unknown): string {
+  if (typeof value === "string") return value;
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? String(value) : serialized;
+}
 
 export default function Home() {
   const [code, setCode] = useState(DEFAULT_CODE);
@@ -18,78 +32,94 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const editorRef =
-    useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
-  const monacoRef = useRef<typeof Monaco | null>(null);
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const decorationsRef = useRef<string[]>([]);
 
   const currentEvent = events[currentStep];
-  const callStack = events
-  .slice(0, currentStep + 1)
-  .reduce<string[]>((stack, event) => {
-    const functionName = event.function || "<module>";
-
-    if (event.event === "return") {
-      if (functionName === "<module>") {
-        return [];
-      }
-
-      const index = stack.lastIndexOf(functionName);
-
-      if (index !== -1) {
-        return stack.slice(0, index);
-      }
-
-      return stack;
-    }
-
-    if (stack[stack.length - 1] !== functionName) {
-      return [...stack, functionName];
-    }
-
-    return stack;
-  }, []);
   const previousEvent = currentStep > 0 ? events[currentStep - 1] : undefined;
 
-  const variableChanges = Object.entries(currentEvent?.variables ?? {}).map(
-    ([name, value]) => {
-      const previousVariables = previousEvent?.variables ?? {};
-      const existedBefore = Object.hasOwn(previousVariables, name);
-      const changed =
-        !existedBefore ||
-        JSON.stringify(previousVariables[name]) !== JSON.stringify(value);
+  // Reconstruct the active call stack from the events up to the selected step.
+  const activeFrames = events
+    .slice(0, currentStep + 1)
+    .reduce<Frame[]>((frames, event) => {
+      const existingIndex = frames.findIndex(
+        (frame) => frame.frame_id === event.frame_id
+      );
 
-      return { name, value, changed, existedBefore, previousValue: previousVariables[name] };
-    }
+      if (event.event === "return") {
+        return frames.filter((frame) => frame.frame_id !== event.frame_id);
+      }
+
+      if (existingIndex === -1) {
+        return [...frames, event];
+      }
+
+      return frames.map((frame, index) =>
+        index === existingIndex ? event : frame
+      );
+    }, []);
+
+  const currentVariables = currentEvent?.variables ?? {};
+  const previousVariables = previousEvent?.variables ?? {};
+
+  const changedVariables = Object.entries(currentVariables).filter(
+    ([name, value]) =>
+      !(name in previousVariables) ||
+      JSON.stringify(previousVariables[name]) !== JSON.stringify(value)
   );
 
-  useEffect(() => {
+  const removedVariables = Object.keys(previousVariables).filter(
+    (name) => !(name in currentVariables)
+  );
+
+  const handleEditorMount: OnMount = (editor, monaco) => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+  };
+
+  const highlightCurrentLine = useCallback(() => {
     const editor = editorRef.current;
     const monaco = monacoRef.current;
 
     if (!editor || !monaco) return;
 
+    const line = currentEvent?.line;
+    const model = editor.getModel();
+
+    if (!line || !model || line < 1 || line > model.getLineCount()) {
+      decorationsRef.current = editor.deltaDecorations(
+        decorationsRef.current,
+        []
+      );
+      return;
+    }
+
     decorationsRef.current = editor.deltaDecorations(
       decorationsRef.current,
-      currentEvent
-        ? [{
-            range: new monaco.Range(currentEvent.line, 1, currentEvent.line, 1),
-            options: {
-              isWholeLine: true,
-              className: "dryrun-current-line",
-              glyphMarginClassName: "dryrun-current-line-glyph",
-            },
-          }]
-        : []
+      [
+        {
+          range: new monaco.Range(line, 1, line, 1),
+          options: {
+            isWholeLine: true,
+            className: "dryrun-current-line",
+            linesDecorationsClassName: "dryrun-line-gutter",
+          },
+        },
+      ]
     );
 
-    if (currentEvent) editor.revealLineInCenter(currentEvent.line);
-  }, [currentEvent]);
+    editor.revealLineInCenterIfOutsideViewport(line);
+  }, [currentEvent?.line]);
+
+  useEffect(() => {
+    highlightCurrentLine();
+  }, [highlightCurrentLine]);
 
   useEffect(() => {
     if (!isPlaying || events.length === 0) return;
 
-    const timer = window.setInterval(() => {
+    const interval = window.setInterval(() => {
       setCurrentStep((step) => {
         if (step >= events.length - 1) {
           setIsPlaying(false);
@@ -99,349 +129,438 @@ export default function Home() {
       });
     }, 1000);
 
-    return () => window.clearInterval(timer);
+    return () => window.clearInterval(interval);
   }, [isPlaying, events.length]);
 
-  async function handleRun() {
+  const handleRun = async () => {
     setIsPlaying(false);
     setIsLoading(true);
     setError("");
-    setEvents([]);
-    setCurrentStep(0);
 
     try {
       const response = await traceCode(code);
       setEvents(response.events);
+      setCurrentStep(0);
+
+      if (response.events.length === 0) {
+        setError("No execution events were recorded for this code.");
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to trace this code.");
+      setEvents([]);
+      setCurrentStep(0);
+      setError(
+        err instanceof Error ? err.message : "Unable to trace this code."
+      );
     } finally {
       setIsLoading(false);
     }
-  }
+  };
 
-  function moveToStep(step: number) {
+  const goToStep = (step: number) => {
     setIsPlaying(false);
     setCurrentStep(Math.max(0, Math.min(step, events.length - 1)));
-  }
+  };
 
-  function togglePlayback() {
-    if (events.length === 0) return;
-
-    if (!isPlaying && currentStep === events.length - 1) {
-      setCurrentStep(0);
-    }
-
-    setIsPlaying((playing) => !playing);
-  }
+  const formatEvent = (event: TraceEvent | undefined) => {
+    if (!event) return "—";
+    return event.event;
+  };
 
   return (
     <main className="min-h-screen bg-[#0b0d12] text-slate-100">
-      <header className="sticky top-0 z-10 border-b border-white/[0.08] bg-[#0b0d12]/95 backdrop-blur">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-5 py-4 lg:px-8">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/15 text-lg font-bold text-indigo-300 ring-1 ring-indigo-400/25">
-              D
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold tracking-tight">DryRun AI</h1>
-              <p className="text-xs text-slate-500">Understand code visually</p>
-            </div>
-          </div>
+      <style jsx global>{`
+        .dryrun-current-line {
+          background: rgba(129, 140, 248, 0.16);
+        }
 
-          <button
-            onClick={handleRun}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 rounded-lg bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isLoading ? "Tracing..." : "▶ Run code"}
-          </button>
+        .dryrun-line-gutter {
+          border-left: 3px solid #818cf8;
+          margin-left: 3px;
+        }
+
+        .monaco-editor,
+        .monaco-editor-background,
+        .monaco-editor .margin {
+          background-color: #17191f !important;
+        }
+      `}</style>
+
+      <header className="sticky top-0 z-20 flex h-[82px] items-center justify-between border-b border-white/[0.07] bg-[#0b0d12]/95 px-5 backdrop-blur md:px-8">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-indigo-400/20 bg-indigo-500/15 text-xl font-bold text-indigo-300">
+            D
+          </div>
+          <div>
+            <h1 className="text-base font-semibold tracking-tight">
+              DryRun AI
+            </h1>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Understand code visually
+            </p>
+          </div>
         </div>
+
+        <button
+          type="button"
+          onClick={handleRun}
+          disabled={isLoading}
+          className="rounded-xl bg-indigo-500 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/15 transition hover:bg-indigo-400 disabled:cursor-wait disabled:opacity-60"
+        >
+          {isLoading ? "Tracing..." : "▶ Run code"}
+        </button>
       </header>
 
-      <div className="mx-auto max-w-[1600px] px-5 py-7 lg:px-8">
-        <div className="mb-6">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300">
-            Python playground
-          </p>
-          <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-            See what your code does.
-          </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-            Step through execution, follow variable changes, and understand
-            how the program state evolves.
-          </p>
-        </div>
-
-        <div className="grid min-w-0 grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(380px,1fr)]">
-          <section className="min-w-0 overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e] shadow-2xl shadow-black/10">
-            <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
-              <div>
-                <h3 className="text-sm font-semibold">Source code</h3>
-                <p className="mt-1 text-xs text-slate-500">main.py</p>
-              </div>
-              <span className="rounded-md border border-white/[0.08] px-2.5 py-1 text-xs text-slate-400">
-                Python
-              </span>
+      <div className="grid min-h-[calc(100vh-82px)] grid-cols-1 gap-5 p-4 md:p-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(400px,0.88fr)]">
+        <section className="flex min-h-[620px] flex-col overflow-hidden rounded-2xl border border-white/[0.09] bg-[#17191f]">
+          <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
+            <div>
+              <h2 className="text-sm font-semibold">Python Code</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Edit your program, then run the trace
+              </p>
             </div>
+            <span className="rounded-full border border-white/[0.08] px-3 py-1 text-xs text-slate-400">
+              Python
+            </span>
+          </div>
 
+          <div className="min-h-[480px] flex-1">
             <Editor
-              height="520px"
+              height="100%"
               language="python"
               theme="vs-dark"
               value={code}
               onChange={(value) => setCode(value ?? "")}
-              onMount={(editor, monaco) => {
-                editorRef.current = editor;
-                monacoRef.current = monaco;
-              }}
+              onMount={handleEditorMount}
               options={{
-                fontSize: 15,
-                lineHeight: 25,
+                fontSize: 14,
+                lineHeight: 26,
                 minimap: { enabled: false },
-                lineNumbers: "on",
-                glyphMargin: true,
                 scrollBeyondLastLine: false,
                 automaticLayout: true,
-                padding: { top: 20, bottom: 20 },
+                padding: { top: 18, bottom: 18 },
+                lineNumbers: "on",
                 roundedSelection: true,
+                renderLineHighlight: "all",
+                tabSize: 4,
+                wordWrap: "on",
               }}
             />
-
-            <div className="flex items-center justify-between border-t border-white/[0.07] px-5 py-3 text-xs text-slate-500">
-              <span>{code.split("\n").length} lines</span>
-              <span>Changes are kept in the editor</span>
-            </div>
-          </section>
-
-          <section className="min-w-0 space-y-5">
-            <div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e]">
-              <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
-                <div>
-                  <h3 className="text-sm font-semibold">Execution timeline</h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Navigate through recorded states
-                  </p>
-                </div>
-                <span className="rounded-full bg-indigo-400/10 px-3 py-1 text-xs font-medium text-indigo-300">
-                  {events.length ? `${currentStep + 1} / ${events.length}` : "Ready"}
-                </span>
-              </div>
-
-              <div className="p-5">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => moveToStep(currentStep - 1)}
-                    disabled={!events.length || currentStep === 0}
-                    className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 transition hover:bg-white/[0.06] disabled:opacity-30"
-                  >
-                    ← Previous
-                  </button>
-                  <button
-                    onClick={togglePlayback}
-                    disabled={!events.length}
-                    className="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-400 disabled:opacity-30"
-                  >
-                    {isPlaying ? "Ⅱ Pause" : "▶ Play"}
-                  </button>
-                  <button
-                    onClick={() => moveToStep(currentStep + 1)}
-                    disabled={!events.length || currentStep >= events.length - 1}
-                    className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 transition hover:bg-white/[0.06] disabled:opacity-30"
-                  >
-                    Next →
-                  </button>
-                </div>
-
-                <input
-                  aria-label="Execution step"
-                  type="range"
-                  min={0}
-                  max={Math.max(events.length - 1, 0)}
-                  value={currentStep}
-                  disabled={!events.length}
-                  onChange={(event) => moveToStep(Number(event.target.value))}
-                  className="mt-6 w-full accent-indigo-400 disabled:opacity-30"
-                />
-
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-                    <p className="text-xs text-slate-500">Current line</p>
-                    <p className="mt-2 text-2xl font-semibold">
-                      {currentEvent?.line ?? "—"}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-                    <p className="text-xs text-slate-500">Event type</p>
-                    <p className="mt-2 text-lg font-semibold text-indigo-300">
-                      {currentEvent?.event ?? "Waiting"}
-                    </p>
-                  </div>
-                </div>
-
-                {error && (
-                  <p className="mt-4 rounded-lg border border-red-400/20 bg-red-400/10 p-3 text-sm text-red-300">
-                    {error}
-                  </p>
-                )}
-
-                {!error && events.length === 0 && (
-                  <p className="mt-4 text-sm leading-6 text-slate-500">
-                    Run your code to see its execution steps here.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            
-<div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e]">
-  <div className="border-b border-white/[0.07] px-5 py-4">
-    <div className="flex items-center justify-between">
-      <h3 className="text-sm font-semibold">Call Stack</h3>
-      <span className="rounded-full bg-white/[0.05] px-2.5 py-1 text-xs text-slate-400">
-        {callStack.length} frame{callStack.length === 1 ? "" : "s"}
-      </span>
-    </div>
-    <p className="mt-1 text-xs text-slate-500">
-      Function calls active at this step
-    </p>
-  </div>
-
-  <div className="space-y-2 p-5">
-    {callStack.length === 0 ? (
-      <p className="py-4 text-center text-sm text-slate-500">
-        No active stack frames.
-      </p>
-    ) : (
-      [...callStack].reverse().map((frame, index) => (
-        <div
-          key={`${frame}-${index}`}
-          className={`flex items-center gap-3 rounded-xl border p-3 ${
-            index === 0
-              ? "border-indigo-400/40 bg-indigo-400/[0.08]"
-              : "border-white/[0.07] bg-white/[0.02]"
-          }`}
-        >
-          <div
-            className={`flex h-8 w-8 items-center justify-center rounded-lg font-mono text-sm ${
-              index === 0
-                ? "bg-indigo-400/15 text-indigo-300"
-                : "bg-white/[0.05] text-slate-400"
-            }`}
-          >
-            {index === 0 ? "▶" : "ƒ"}
           </div>
 
-          <div className="min-w-0 flex-1">
-            <p className="truncate font-mono text-sm text-slate-200">
-              {frame}()
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              {index === 0 ? "Current frame" : "Caller"}
-            </p>
-          </div>
-
-          {index === 0 && (
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-300">
-              Active
+          <div className="flex items-center justify-between border-t border-white/[0.07] px-5 py-3 text-xs text-slate-500">
+            <span>
+              {code.split("\n").length} lines
             </span>
+            <span>Changes are kept in the editor</span>
+          </div>
+        </section>
+
+        <section className="flex min-w-0 flex-col gap-5">
+          {error && (
+            <div
+              role="alert"
+              className="rounded-xl border border-rose-400/20 bg-rose-400/[0.07] p-4 text-sm text-rose-200"
+            >
+              <p className="font-semibold">Unable to trace code</p>
+              <p className="mt-1 break-words text-rose-200/80">{error}</p>
+            </div>
           )}
-        </div>
-      ))
-    )}
-  </div>
-</div>
 
+          <div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e]">
+            <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
+              <div>
+                <h2 className="text-sm font-semibold">Execution Trace</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Step through the recorded execution
+                </p>
+              </div>
+              <span className="text-sm text-slate-400">
+                {events.length > 0
+                  ? `Step ${currentStep + 1} of ${events.length}`
+                  : "No trace"}
+              </span>
+            </div>
 
-            <div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e]">
-              <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
-                <div>
-                  <h3 className="text-sm font-semibold">Memory view</h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Variables at the selected step
-                  </p>
-                </div>
-                <span className="flex items-center gap-2 text-xs text-slate-400">
-                  <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                  Current state
-                </span>
+            <div className="space-y-5 p-5">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => goToStep(currentStep - 1)}
+                  disabled={events.length === 0 || currentStep === 0}
+                  className="rounded-lg border border-white/[0.09] px-3 py-2 text-sm transition hover:bg-white/[0.05] disabled:opacity-30"
+                >
+                  ← Previous
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isPlaying) {
+                      setIsPlaying(false);
+                    } else if (currentStep >= events.length - 1) {
+                      setCurrentStep(0);
+                      setIsPlaying(true);
+                    } else {
+                      setIsPlaying(true);
+                    }
+                  }}
+                  disabled={events.length === 0}
+                  className="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold transition hover:bg-indigo-400 disabled:opacity-30"
+                >
+                  {isPlaying ? "Ⅱ Pause" : "▶ Play"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => goToStep(currentStep + 1)}
+                  disabled={
+                    events.length === 0 || currentStep >= events.length - 1
+                  }
+                  className="rounded-lg border border-white/[0.09] px-3 py-2 text-sm transition hover:bg-white/[0.05] disabled:opacity-30"
+                >
+                  Next →
+                </button>
               </div>
 
-              <div className="p-5">
-                {!currentEvent ? (
-                  <div className="flex min-h-32 flex-col items-center justify-center rounded-xl border border-dashed border-white/10 text-center">
-                    <span className="text-2xl text-slate-600">◇</span>
-                    <p className="mt-2 text-sm text-slate-400">Memory is waiting</p>
-                    <p className="mt-1 text-xs text-slate-600">
-                      Run the program to inspect variables
-                    </p>
-                  </div>
-                ) : variableChanges.length === 0 ? (
-                  <p className="py-8 text-center text-sm text-slate-500">
-                    No local variables at this step.
+              <input
+                aria-label="Execution step"
+                type="range"
+                min={0}
+                max={Math.max(0, events.length - 1)}
+                value={currentStep}
+                onChange={(event) => goToStep(Number(event.target.value))}
+                disabled={events.length === 0}
+                className="w-full cursor-pointer accent-indigo-400 disabled:cursor-not-allowed"
+              />
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] p-4">
+                  <p className="text-xs text-slate-500">Current line</p>
+                  <p className="mt-2 text-2xl font-semibold text-white">
+                    {currentEvent?.line ?? "—"}
                   </p>
-                ) : (
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {variableChanges.map((variable) => (
+                </div>
+                <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] p-4">
+                  <p className="text-xs text-slate-500">Event type</p>
+                  <p className="mt-2 text-xl font-semibold text-indigo-300">
+                    {formatEvent(currentEvent)}
+                  </p>
+                </div>
+              </div>
+
+              {currentEvent && (
+                <div className="rounded-xl border border-white/[0.07] bg-black/10 p-3">
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span className="text-slate-500">Function</span>
+                    <span className="font-mono text-slate-200">
+                      {currentEvent.function}()
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+                    <span className="text-slate-500">Frame ID</span>
+                    <span className="font-mono text-indigo-300">
+                      #{currentEvent.frame_id}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e]">
+            <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
+              <div>
+                <h2 className="text-sm font-semibold">Call Stack</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Active function invocations at this step
+                </p>
+              </div>
+              <span className="rounded-full bg-indigo-400/10 px-3 py-1 text-xs text-indigo-300">
+                {activeFrames.length}{" "}
+                {activeFrames.length === 1 ? "frame" : "frames"}
+              </span>
+            </div>
+
+            <div className="space-y-3 p-4">
+              {activeFrames.length === 0 ? (
+                <p className="py-6 text-center text-sm text-slate-500">
+                  No active frames at this step.
+                </p>
+              ) : (
+                [...activeFrames].reverse().map((frame, index) => (
+                  <div
+                   
+  key={`${frame.frame_id}-${frame.step}`}
+                    className={`overflow-hidden rounded-xl border ${
+                      index === 0
+                        ? "border-indigo-400/40 bg-indigo-400/[0.06]"
+                        : "border-white/[0.08] bg-white/[0.02]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/[0.05] font-mono text-indigo-300">
+                          ƒ
+                        </div>
+                        <div>
+                          <p className="font-mono text-sm text-slate-200">
+                            {frame.function}()
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Frame #{frame.frame_id} · Line {frame.line}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs text-indigo-300">
+                        {index === 0 ? "ACTIVE" : "CALLER"}
+                      </span>
+                    </div>
+
+                    <div className="border-t border-white/[0.07] px-4 py-3">
+                      <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                        Local variables
+                      </p>
+
+                      {Object.entries(frame.variables).length === 0 ? (
+                        <p className="text-sm text-slate-500">
+                          No local variables at this point.
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {Object.entries(frame.variables).map(
+                            ([name, value]) => (
+                              <div
+                                key={name}
+                                className="flex items-start justify-between gap-4 rounded-lg bg-black/20 px-3 py-2"
+                              >
+                                <span className="font-mono text-sm text-slate-300">
+                                  {name}
+                                </span>
+                                <span className="break-all text-right font-mono text-sm text-emerald-300">
+                                  {getValueLabel(value)}
+                                </span>
+                              </div>
+                            )
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border border-white/[0.09] bg-[#13161e]">
+            <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
+              <div>
+                <h2 className="text-sm font-semibold">Memory View</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Variables at the selected execution step
+                </p>
+              </div>
+              <span className="flex items-center gap-2 text-xs text-slate-400">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                Current state
+              </span>
+            </div>
+
+            <div className="p-4">
+              {Object.entries(currentVariables).length === 0 ? (
+                <p className="py-8 text-center text-sm text-slate-500">
+                  No local variables at this step.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {Object.entries(currentVariables).map(([name, value]) => {
+                    const isNew = !(name in previousVariables);
+                    const changed =
+                      !isNew &&
+                      JSON.stringify(previousVariables[name]) !==
+                        JSON.stringify(value);
+
+                    return (
                       <div
-                        key={variable.name}
-                        className={`min-w-0 rounded-xl border p-4 transition-colors ${
-                          variable.changed
-                            ? "border-indigo-400/40 bg-indigo-400/[0.07]"
-                            : "border-white/[0.08] bg-white/[0.02]"
-                        }`}
+                        key={name}
+                        className="rounded-xl border border-indigo-400/25 bg-indigo-400/[0.05] p-4"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                             Variable
                           </span>
-                          {variable.changed && (
-                            <span className="rounded-md bg-indigo-400/10 px-2 py-1 text-[10px] font-semibold tracking-wide text-indigo-300">
-                              {variable.existedBefore ? "UPDATED" : "NEW"}
+                          {isNew ? (
+                            <span className="rounded-md bg-indigo-400/10 px-2 py-1 text-[10px] font-semibold text-indigo-300">
+                              NEW
+                            </span>
+                          ) : changed ? (
+                            <span className="rounded-md bg-amber-400/10 px-2 py-1 text-[10px] font-semibold text-amber-300">
+                              UPDATED
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-500">
+                              UNCHANGED
                             </span>
                           )}
                         </div>
-
-                        <p className="mt-3 font-mono text-sm font-semibold text-slate-200">
-                          {variable.name}
+                        <p className="mt-3 font-mono text-sm text-slate-200">
+                          {name}
                         </p>
-
-                        <div className="my-3 h-px bg-white/[0.08]" />
-
-                        <p className="break-words font-mono text-2xl font-semibold tracking-tight text-emerald-300">
-                          {JSON.stringify(variable.value)}
+                        <div className="my-3 border-t border-white/[0.07]" />
+                        <p className="break-all font-mono text-xl font-semibold text-emerald-300">
+                          {getValueLabel(value)}
                         </p>
-
-                        {variable.changed && variable.existedBefore && (
-                          <p className="mt-2 break-words text-xs text-slate-500">
-                            Previous value:{" "}
-                            <span className="font-mono text-slate-400">
-                              {JSON.stringify(variable.previousValue)}
-                            </span>
-                          </p>
-                        )}
                       </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {removedVariables.length > 0 && (
+                <div className="mt-3 rounded-xl border border-rose-400/20 bg-rose-400/[0.04] p-3">
+                  <p className="mb-2 text-xs font-semibold text-rose-300">
+                    Variables no longer present in this snapshot
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {removedVariables.map((name) => (
+                      <span
+                        key={name}
+                        className="rounded-md bg-rose-400/10 px-2 py-1 font-mono text-xs text-rose-200"
+                      >
+                        {name}
+                      </span>
                     ))}
                   </div>
-                )}
+                </div>
+              )}
 
-                {currentEvent && (
-                  <div className="mt-4 flex items-start gap-3 rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-                    <span className="mt-0.5 text-indigo-300">✳</span>
-                    <div>
-                      <p className="text-xs font-medium text-slate-300">
-                        State snapshot
-                      </p>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">
-                        These values were captured by the Python tracer for
-                        the selected execution event.
-                      </p>
-                    </div>
+              <div className="mt-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+                <div className="flex items-start gap-3">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-400/10 text-emerald-300">
+                    ✳
+                  </span>
+                  <div>
+                    <p className="text-xs font-medium text-slate-200">
+                      State snapshot
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      These values were captured by the Python tracer for the
+                      selected execution event.
+                    </p>
                   </div>
-                )}
+                </div>
               </div>
             </div>
-          </section>
-        </div>
+          </div>
+
+          {events.length > 0 && (
+            <p className="px-1 text-xs leading-5 text-slate-600">
+              Trace events represent recorded Python execution points. The
+              current visualization is line-based, not a complete simulation
+              of every internal operation.
+            </p>
+          )}
+        </section>
       </div>
     </main>
   );

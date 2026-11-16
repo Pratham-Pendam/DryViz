@@ -5,14 +5,16 @@ export type HealthResponse = {
   service: string;
 };
 
+
 export type TraceEvent = {
   step: number;
   line: number;
-  event: string;
-  function:string;
+  event: "call" | "line" | "return";
+  function: string;
+  frame_id: number;
+  parent_frame_id: number | null;
   variables: Record<string, unknown>;
 };
-
 export type TraceResponse = {
   events: TraceEvent[];
 };
