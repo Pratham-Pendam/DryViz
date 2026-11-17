@@ -13,10 +13,14 @@ class PythonTracer(Tracer):
     def __init__(self) -> None:
         self.events: list[TraceEvent] = []
         self.step = 0
+        self.next_frame_id = 1
+        self.frame_ids: dict[int, int] = {}
 
     def trace(self, code: str) -> list[TraceEvent]:
         self.events = []
         self.step = 0
+        self.next_frame_id = 1
+        self.frame_ids = {}
 
         compiled_code = compile(code, TRACE_FILENAME, "exec")
 
@@ -39,48 +43,72 @@ class PythonTracer(Tracer):
         if frame.f_code.co_filename != TRACE_FILENAME:
             return None
 
-        if event == "line":
+        frame_key = id(frame)
+
+        if event == "call":
+            frame_id = self.next_frame_id
+            self.next_frame_id += 1
+            self.frame_ids[frame_key] = frame_id
+
+            parent_frame_id = self.frame_ids.get(id(frame.f_back))
+
             self._record(
-                line=frame.f_lineno,
-                event_type="line",
-                variables=frame.f_locals,
-                function=(
-                    "<module>"
-                    if frame.f_code.co_name == "<module>"
-                    else frame.f_code.co_name
-                ),
+                frame=frame,
+                event_type="call",
+                frame_id=frame_id,
+                parent_frame_id=parent_frame_id,
             )
 
+        elif event == "line":
+            frame_id = self.frame_ids.get(frame_key)
+
+            if frame_id is not None:
+                self._record(
+                    frame=frame,
+                    event_type="line",
+                    frame_id=frame_id,
+                    parent_frame_id=self.frame_ids.get(id(frame.f_back)),
+                )
+
         elif event == "return":
-            self._record(
-                line=frame.f_lineno,
-                event_type="return",
-                variables=frame.f_locals,
-                function=(
-                    "<module>"
-                    if frame.f_code.co_name == "<module>"
-                    else frame.f_code.co_name
-                ),
-            )
+            frame_id = self.frame_ids.get(frame_key)
+
+            if frame_id is not None:
+                self._record(
+                    frame=frame,
+                    event_type="return",
+                    frame_id=frame_id,
+                    parent_frame_id=self.frame_ids.get(id(frame.f_back)),
+                )
+                self.frame_ids.pop(frame_key, None)
 
         return self._trace
 
     def _record(
         self,
-        line: int,
+        frame,
         event_type: str,
-        variables: dict[str, Any],
-        function: str,
+        frame_id: int,
+        parent_frame_id: int | None,
     ) -> None:
+        function_name = (
+            "<module>"
+            if frame.f_code.co_name == "<module>"
+            else frame.f_code.co_name
+        )
+
         self.events.append(
             TraceEvent(
                 step=self.step,
-                line=line,
+                line=frame.f_lineno,
                 event_type=event_type,
-                variables=self._snapshot_locals(variables),
-                function=function,
+                function=function_name,
+                frame_id=frame_id,
+                parent_frame_id=parent_frame_id,
+                variables=self._snapshot_locals(frame.f_locals),
             )
         )
+
         self.step += 1
 
     def _snapshot_locals(
@@ -96,6 +124,7 @@ class PythonTracer(Tracer):
 
         return result
 
+    
     def _safe_value(self, value: Any) -> Any:
         try:
             if isinstance(value, (str, int, float, bool, type(None))):
@@ -110,6 +139,11 @@ class PythonTracer(Tracer):
                     for key, item in value.items()
                 }
 
-            return repr(value)
+            if callable(value):
+                return f"<function {getattr(value, '__name__', 'unknown')}>"
+
+            return f"<{type(value).__name__}>"
+
         except Exception:
             return "<unavailable>"
+ 
